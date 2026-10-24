@@ -185,6 +185,9 @@ the process owner's listener and TLS settings while rotating the run identity.
 
 Idle retirement suspends and stops Runner, saves its exact checkpoint, writes
 credentials through the durable lease handoff, then completes the provider task.
+Core permits read-only suspension proof for the exact saved identity of a
+successful warm run after its reuse lease is retained or superseded. This does
+not authorize new work or file access through that lease.
 Temporary credential homes are not needed after the originating run ends.
 Termination receipts cover all run leases that owned the retired physical task.
 A stopped task gets a new provider task ID for checkpoint resumption. Inspection

@@ -46,9 +46,6 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   const activeProbe = lease.heartbeatRunId === null && lease.issueId === null && probe
     && typeof probe.runId === "string" && typeof probe.sessionId === "string"
     && typeof probe.expiresAtMs === "number" && probe.expiresAtMs > Date.now();
-  if ((operation.kind === "read_file" || operation.kind === "describe" || operation.kind === "prepare" || operation.kind === "submit" || operation.kind === "connection" || (operation.kind === "read_state" && metadata.runnerTaskExecutionStopped !== true) || operation.kind === "archive_state" || operation.kind === "check_project_auth" || operation.kind === "copilot_metadata") &&
-      (metadata.runnerTaskRetiring === true || !environment || (!activeProbe && run?.status !== "running") || lease.status !== "active" || (lease.expiresAt && lease.expiresAt.getTime() <= Date.now()))) throw new Error("Plugin-provided Runner execution lease is not active");
-  if (operation.kind === "copilot_metadata" && !activeProbe) throw new Error("Copilot metadata requires a private setup lease");
   const checkpointIdentity = operation.kind === "read_state" || operation.kind === "read_file" ? operation.identity
     : operation.kind === "archive_state" ? operation.priorIdentity : null;
   const runner = checkpointIdentity ? { runnerId: checkpointIdentity.runnerInstanceId, leaseId: checkpointIdentity.environmentLeaseId,
@@ -70,6 +67,13 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   const ownCheckpoint = checkpointIdentity && !resumeFrom &&
     (matches(checkpointIdentity,savedIdentity) || operation.kind !== "read_file" && matches(checkpointIdentity,priorSaved));
   if (checkpointIdentity && !resumeFrom && !ownCheckpoint) throw new Error("Plugin Runner state identity mismatch");
+  const retainedCheckpointRead = operation.kind === "read_state" && ownCheckpoint &&
+    lease.leasePolicy === "reuse_by_environment" && ["retained", "expired"].includes(lease.status) &&
+    run?.status === "succeeded" && metadata.runnerTaskDispatched === true &&
+    (metadata.runnerTaskLifecyclePolicy as {mode?:unknown}|undefined)?.mode === "warm";
+  if ((operation.kind === "read_file" || operation.kind === "describe" || operation.kind === "prepare" || operation.kind === "submit" || operation.kind === "connection" || (operation.kind === "read_state" && metadata.runnerTaskExecutionStopped !== true && !retainedCheckpointRead) || operation.kind === "archive_state" || operation.kind === "check_project_auth" || operation.kind === "copilot_metadata") &&
+      (metadata.runnerTaskRetiring === true || !environment || (!activeProbe && run?.status !== "running") || lease.status !== "active" || (lease.expiresAt && lease.expiresAt.getTime() <= Date.now()))) throw new Error("Plugin-provided Runner execution lease is not active");
+  if (operation.kind === "copilot_metadata" && !activeProbe) throw new Error("Copilot metadata requires a private setup lease");
   const warmAttachment = !!prior && metadata.runnerTaskReused === true &&
     (matches(prior, savedIdentity) || matches(prior, priorSaved) && operation.kind === "prepare" && matches(operation.requirements.identity, savedIdentity)) && runner?.runnerId === prior.runnerInstanceId &&
     runner?.leaseId === prior.environmentLeaseId && runner?.sessionId === prior.normalizedSessionId;

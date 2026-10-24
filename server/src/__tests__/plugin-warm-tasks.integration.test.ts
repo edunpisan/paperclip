@@ -84,6 +84,19 @@ const support=await getEmbeddedPostgresTestSupport();
   const [old]=await db.select().from(environmentLeases).where(eq(environmentLeases.id,f.first.lease.id));
   expect(old.status).toBe("expired");
  });
+ it("keeps successful warm state readable for retirement before and after lease handoff",async()=>{
+  const f=await fixture();
+  const read=()=>f.runtime().task({companyId:f.companyId,leaseId:f.first.lease.id,operation:{kind:"read_state",identity:f.identity}});
+  await expect(read()).resolves.toMatchObject({kind:"state"});
+  await f.nextRun();await f.acquire();
+  await expect(read()).resolves.toMatchObject({kind:"state"});
+  const [prior]=await db.select().from(environmentLeases).where(eq(environmentLeases.id,f.first.lease.id));
+  expect(prior.status).toBe("expired");
+  await expect(f.runtime().task({companyId:f.companyId,leaseId:f.first.lease.id,operation:{kind:"describe"}})).rejects.toThrow("not active");
+  await expect(f.runtime().task({companyId:f.companyId,leaseId:f.first.lease.id,operation:{kind:"read_state",identity:{...f.identity,itemId:"foreign"}}})).rejects.toThrow();
+  expect(f.calls).not.toContain("stop");
+  expect(f.calls.filter(call=>call==="submit")).toHaveLength(1);
+ });
  it("resumes stopped checkpoints through a new physical task instead of reusing a tombstone",async()=>{
   const f=await fixture();f.stopped();await f.nextRun();
   const next=await f.acquire();
