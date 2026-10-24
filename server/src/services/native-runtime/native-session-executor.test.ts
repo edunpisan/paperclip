@@ -10378,14 +10378,16 @@ describe("runnerd provider runtime wiring", () => {
     await rm(isolatedStateDirectory, { recursive: true, force: true });
   });
 
-  it.each(["unchanged", "changed", "runtime-context", "retirement-failed", "stale-owner", "active-owner", "missing-owner", "foreign-environment", "plugin-replaced"] as const)("rotates an owned warm remote runner before checking changed configuration: %s", async scenario => {
+  it.each(["unchanged", "changed", "runtime-context", "retirement-failed", "stale-owner", "active-owner", "missing-owner", "foreign-environment", "plugin-replaced", "plugin-managed-github"] as const)("rotates an owned warm remote runner before checking changed configuration: %s", async scenario => {
+    const plugin = scenario === "plugin-replaced" || scenario === "plugin-managed-github";
+    const reusable = scenario === "unchanged" || scenario === "plugin-managed-github";
     const first = { ...scopedNativeExecution(`warm-admission-${scenario}`),
       schema: "paperclip.native-execution-input.v5" as const,
       provider: { kind: "codex" as const, model: null, approvalPolicy: "never" as const },
       executionMode: "default" as const, planningContext: null, runtimeContext: nativeRuntimeContextFixture() };
     first.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: 60_000 };
     const next = { ...first, binding: { ...first.binding, runId: `${first.binding.runId}-next` },
-      session: { ...first.session, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: ["unchanged", "runtime-context", "stale-owner", "missing-owner", "plugin-replaced"].includes(scenario) ? 60_000 : 90_000 } } };
+      session: { ...first.session, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: ["unchanged", "runtime-context", "stale-owner", "missing-owner", "plugin-replaced", "plugin-managed-github"].includes(scenario) ? 60_000 : 90_000 } } };
     if (scenario === "runtime-context") {
       next.runtimeContext = { ...first.runtimeContext,
         mcp: { ...first.runtimeContext.mcp, digest: "1".repeat(64) } };
@@ -10403,16 +10405,19 @@ describe("runnerd provider runtime wiring", () => {
       return {kind:"description",taskId:acquisition.providerLeaseId,launchPreparationVersion:1,projectAuthCheckVersion:1,warmTaskVersion:1,
         runner:{version:"fixture",digest:`sha256:${"a".repeat(64)}`}};
     });
-    const pluginTarget=scenario === "plugin-replaced" ? {...target,remoteCwd:".",leaseId:identity.environmentLeaseId,
+    const pluginTarget=plugin ? {...target,remoteCwd:".",leaseId:identity.environmentLeaseId,
       runnerTask:task,sandboxLeaseAcquisition:acquisition} : target;
     const home=join(isolatedStateDirectory,"warm-plugin-home");
-    if(scenario === "plugin-replaced") {
+    if(plugin) {
       await mkdir(home,{recursive:true});await writeFile(join(home,"auth.json"),JSON.stringify({OPENAI_API_KEY:"synthetic-fixture"}),{mode:0o600});
     }
-    const pluginOptions=scenario === "plugin-replaced" ? {runnerIngressAuthorized:true,managedAiCredentialHome:home,
+    const pluginOptions=plugin ? {runnerIngressAuthorized:true,managedGitHub:scenario === "plugin-managed-github",managedAiCredentialHome:home,
       managedAiCredentialIdentity:"revision",managedAiAccountIdentity:"account"} : {};
     const resume=scenario === "plugin-replaced" ? vi.spyOn(environmentTaskRuntime,"resolvePluginTaskResume").mockResolvedValue("task-first") : undefined;
-    const owners=scenario === "plugin-replaced" ? vi.spyOn(pluginTaskRuntime,"createPluginRunnerTaskOwner") : undefined;
+    const createOwner = pluginTaskRuntime.createPluginRunnerTaskOwner;
+    const owners=plugin ? vi.spyOn(pluginTaskRuntime,"createPluginRunnerTaskOwner") : undefined;
+    const rebind = vi.fn();
+    if (scenario === "plugin-managed-github") owners!.mockImplementation(input => ({...createOwner(input),rebind}));
 
     const root = await initializeScopedRunnerRoot(first, identity.runnerInstanceId);
     await writeRunnerAuthority(root, identity, "ready");
@@ -10433,8 +10438,8 @@ describe("runnerd provider runtime wiring", () => {
       return result;
     }).mockImplementationOnce(async options => {
       order.push("execute-next");
-      expect(options.existingSession).toBe(scenario === "unchanged" ? firstSession : undefined);
-      await options.onSession?.(scenario === "unchanged" ? firstSession : nextSession);
+      expect(options.existingSession).toBe(reusable ? firstSession : undefined);
+      await options.onSession?.(reusable ? firstSession : nextSession);
       return result;
     });
     const older = { ...first, binding: { ...first.binding, runId: `${first.binding.runId}-older` } };
@@ -10458,7 +10463,7 @@ describe("runnerd provider runtime wiring", () => {
       const continuation = executePaperclipNativeSession({ db: nextDb, execution: next,
         runnerInstanceId: `runner-next-${scenario}`, useRunnerd: true,
         runnerExecutionTarget: (scenario === "foreign-environment" ? { ...target, environmentId: `${environmentId}-other` }
-          : scenario === "plugin-replaced" ? {...pluginTarget,leaseId:"next-core-lease"} : target) as never,...pluginOptions });
+          : plugin ? {...pluginTarget,leaseId:"next-core-lease"} : target) as never,...pluginOptions });
       if (["stale-owner", "active-owner", "missing-owner", "foreign-environment"].includes(scenario)) {
         await expect(continuation).rejects.toThrow(scenario === "active-owner"
           ? "prior_owner_active" : "prior_owner_terminal_state_indeterminate");
@@ -10476,7 +10481,8 @@ describe("runnerd provider runtime wiring", () => {
           expect(owners!.mock.calls.at(-1)![0]).toMatchObject({resumeFrom:"task-first"});
           expect(owners!.mock.calls.at(-1)![0].adoptIdentity).toBeUndefined();
         }
-        expect(order).toEqual(scenario === "unchanged" ? ["execute-next"] : ["retire", "execute-next"]);
+        if (scenario === "plugin-managed-github") expect(rebind).toHaveBeenCalledOnce();
+        expect(order).toEqual(reusable ? ["execute-next"] : ["retire", "execute-next"]);
         if (scenario === "unchanged") {
           await writeRunnerAuthority(root, { ...identity, runId: next.binding.runId }, "ready");
           const third = { ...next, binding: { ...next.binding, runId: `${next.binding.runId}-third` } };
@@ -10493,7 +10499,7 @@ describe("runnerd provider runtime wiring", () => {
           });
           await expect(executePaperclipNativeSession({ db: thirdDb, execution: third,
             runnerInstanceId: `runner-third-${scenario}`, useRunnerd: true,
-            runnerExecutionTarget: target as never })).resolves.toMatchObject({ exitCode: 0 });
+            runnerExecutionTarget: pluginTarget as never,...pluginOptions })).resolves.toMatchObject({ exitCode: 0 });
           expect(firstSession.close).not.toHaveBeenCalled();
           expect(state.execute).toHaveBeenCalledTimes(3);
         }

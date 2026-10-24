@@ -170,6 +170,10 @@ supports authorized run attachment. Select the agent's warm lifecycle or set
 `runnerLifecycleMode: "warm"` and `runnerIdleTimeoutMs` on its plugin environment.
 Core requires an explicitly selected account. Setup probes remain ephemeral.
 
+Plugin task execution does not create a Core-managed GitHub broker. Warm reuse
+and restart recovery use the same broker-ownership rule as initial startup.
+Project authorization is still checked for each new run.
+
 A Launcher task owns one Runner process, independently of Core heartbeat runs.
 Successful warm run completion retains the task and its mounts. The reuse
 fingerprint includes the authorized project set; changing it retires the previous

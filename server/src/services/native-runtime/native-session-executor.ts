@@ -6156,8 +6156,13 @@ function persistWarmNativeCheckpoint(
   chmodSync(path, 0o600);
 }
 
+function needsCoreGitHubAccess(input: Pick<Parameters<typeof executePaperclipNativeSession>[0], "managedGitHub" | "runnerExecutionTarget">): boolean {
+  const target = input.runnerExecutionTarget;
+  return Boolean(input.managedGitHub && !(target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask));
+}
+
 function warmNativeProcessConfigDigest(input: Parameters<typeof executePaperclipNativeSession>[0]): string | undefined {
-  if (input.managedGitHub || input.runnerEnvironment?.PAPERCLIP_GITHUB_BROKER_TOKEN || input.instructionWorkingCopy) return undefined;
+  if (needsCoreGitHubAccess(input) || input.runnerEnvironment?.PAPERCLIP_GITHUB_BROKER_TOKEN || input.instructionWorkingCopy) return undefined;
   return nativeSha256({
     environment: configuredEnvironment(input.runnerEnvironment),
     managedAiCredentialIdentity: input.managedAiCredentialIdentity ?? null,
@@ -8681,7 +8686,7 @@ async function executePaperclipNativeSessionWithinScope(
         entry.instructionRoot !== input.instructionWorkingCopy?.root ||
         entry.managedAiCredentialIdentity !== input.managedAiCredentialIdentity ||
         credentialRunChanged ||
-        Boolean(entry.githubAccess) !== Boolean(input.managedGitHub) ||
+        Boolean(entry.githubAccess) !== needsCoreGitHubAccess(input) ||
         entry.githubAccess?.ready === false ||
         (entry.githubAccess !== undefined && entry.githubAccess.duplexRequested !== adapterExecutionTargetEnablesSandboxDuplexBridge(input.runnerExecutionTarget)) ||
         entry.githubAuthenticationMode !==
@@ -8849,7 +8854,7 @@ async function executePaperclipNativeSessionWithinScope(
   try {
     const usesPluginTask = input.runnerExecutionTarget?.kind === "remote" && input.runnerExecutionTarget.transport === "sandbox" && !!input.runnerExecutionTarget.runnerTask;
     const prepareRunnerEnvironment = async () => {
-      if (!usesPluginTask && input.managedGitHub && input.execution.schema !== "paperclip.native-execution-input.v6" && input.execution.schema !== "paperclip.native-execution-input.v8") {
+      if (needsCoreGitHubAccess(input) && input.execution.schema !== "paperclip.native-execution-input.v6" && input.execution.schema !== "paperclip.native-execution-input.v8") {
         if (!input.execution.workspace.cwd) throw new Error("native_workspace_required");
         githubAccess ??= await timeController("github_access", () => createNativeGitHubAccess({
           scope: input.execution.binding,
@@ -8864,7 +8869,7 @@ async function executePaperclipNativeSessionWithinScope(
       }
       return input.runnerEnvironment;
     };
-    const overlapGitHubPreparation = !usesPluginTask && input.managedGitHub && input.useRunnerd && input.backend === undefined
+    const overlapGitHubPreparation = needsCoreGitHubAccess(input) && input.useRunnerd && input.backend === undefined
       && input.runnerExecutionTarget?.kind === "remote" && input.execution.provider.kind === "codex"
       && input.execution.schema !== "paperclip.native-execution-input.v6"
       && input.execution.schema !== "paperclip.native-execution-input.v8";
