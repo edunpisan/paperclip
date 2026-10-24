@@ -7051,11 +7051,31 @@ export function resolveTaskSessionConfigFreshness(input: {
   };
 }
 
+/** Wizard's API-created root room is a standing chat lane, not a task.
+ * Match its existing identity marker; never inherit the exemption to subtasks.
+ * Conflicting or malformed markers fail closed to ordinary task behavior.
+ */
+export function isWizardStandingChatLane(input: {
+  title?: string | null;
+  description?: string | null;
+  parentId?: string | null;
+}) {
+  if (input.parentId) return false;
+  const markers = `${input.title ?? ""}\n${input.description ?? ""}`.match(/\[wizard-project:[^\]\r\n]*\]/g) ?? [];
+  const marker = markers[0];
+  return marker !== undefined &&
+    /^\[wizard-project:[A-Za-z0-9][A-Za-z0-9_-]{0,63}\]$/.test(marker) &&
+    markers.every((value) => value === marker);
+}
+
 export function shouldAutoCheckoutIssueForWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   issueStatus: string | null;
   issueAssigneeAgentId: string | null;
   issueExecutionState?: unknown;
+  issueTitle?: string | null;
+  issueDescription?: string | null;
+  issueParentId?: string | null;
   isDependencyReady: boolean;
   agentId: string;
 }) {
@@ -7076,6 +7096,13 @@ export function shouldAutoCheckoutIssueForWake(input: {
 
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
   if (!wakeReason) return false;
+  // Only backlog comment dispatch is exempt. Blocked/recovery and all normal
+  // task checkout predicates retain their existing behavior and safety gates.
+  if (issueStatus === "backlog" && wakeReason === "issue_commented" && isWizardStandingChatLane({
+    title: input.issueTitle,
+    description: input.issueDescription,
+    parentId: input.issueParentId,
+  })) return false;
   if (wakeReason === "issue_comment_mentioned") return false;
   if (wakeReason === "source_scoped_recovery_action") return false;
   if (wakeReason.startsWith("execution_")) return false;
@@ -20700,6 +20727,9 @@ export function heartbeatService(
           issueStatus: issueContext.status,
           issueAssigneeAgentId: issueContext.assigneeAgentId,
           issueExecutionState: issueContext.executionState,
+          issueTitle: issueContext.title,
+          issueDescription: issueContext.description,
+          issueParentId: issueContext.parentId,
           isDependencyReady:
             issueDependencyReadiness?.isDependencyReady ?? true,
           agentId: agent.id,
