@@ -225,5 +225,29 @@ describe("openclaw_gateway execute dispatch boundary", () => {
     });
     expect(websocketState.connectionAttempts).toBe(1);
     expect(onDispatch).toHaveBeenCalledTimes(1);
+    // Post-dispatch failures carry no bootstrap evidence and stay fail-closed.
+    expect(result.executionRecovery).toBeUndefined();
+    expect(result.errorFamily).toBeUndefined();
+    expect(result.errorMeta).toBeUndefined();
+  });
+
+  it("marks exhausted pre-dispatch connection failures with bootstrap retry evidence", async () => {
+    vi.useFakeTimers();
+    websocketState.failConnectAttempts = 10; // more than MAX_PREDISPATCH_RETRIES=4 allows
+    const onDispatch = vi.fn();
+
+    const resultPromise = execute(createContext({ onDispatch }));
+    await vi.advanceTimersByTimeAsync(30_000);
+    const result = await resultPromise;
+
+    expect(websocketState.connectionAttempts).toBe(5); // 1 initial + 4 pre-dispatch retries
+    expect(onDispatch).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      exitCode: 1,
+      errorCode: "openclaw_gateway_request_failed",
+      errorFamily: "transient_upstream",
+    });
+    expect(result.executionRecovery).toEqual({ kind: "bootstrap", providerWorkStarted: false });
+    expect(result.errorMeta).toEqual({ preDispatch: true });
   });
 });

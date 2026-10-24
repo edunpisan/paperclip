@@ -49,6 +49,7 @@ import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./
 import { claimQueuedNativeReviewRun } from "./native-runtime/native-review-dispatch.js";
 import { buildNativeReviewRequest } from "./native-runtime/native-review-prompt.js";
 import {
+  isPreDispatchBootstrapRecovery,
   legacyExecutionNeedsReconciliationWithEvidence,
   settleInterruptedNativeBootstrap,
   terminalizeLegacyExecution,
@@ -25950,6 +25951,18 @@ export function heartbeatService(
           } else if (
             outcome === "failed" &&
             readTransientRecoveryContractFromRun(livenessRun)
+          ) {
+            await scheduleBoundedRetryForRun(livenessRun, agent);
+          } else if (
+            // EOS-08: a pre-dispatch gateway connect/WS-open timeout ends as
+            // `timed_out` (not `failed`), so the transient branch above never
+            // fires. Retry only when the adapter attached positive bootstrap
+            // evidence (gateway never received work) plus a transient family.
+            // Post-dispatch timeouts carry no such evidence and stay
+            // fail-closed for reconciliation.
+            outcome === "timed_out" &&
+            readTransientRecoveryContractFromRun(livenessRun) &&
+            isPreDispatchBootstrapRecovery(livenessRun)
           ) {
             await scheduleBoundedRetryForRun(livenessRun, agent);
           } else if (

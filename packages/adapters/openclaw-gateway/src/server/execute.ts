@@ -1191,7 +1191,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let latestResultPayload: unknown = null;
   let retryCount = 0;
   let dispatchReported = false;
-  const MAX_RETRIES = 2;
+  // Pre-dispatch only: the gateway never received work, so retrying cannot
+  // duplicate provider work. Budget covers a short gateway outage (each
+  // attempt waits up to connectTimeoutMs for the WS open); post-dispatch
+  // failures never reach the retry branch below and stay fail-closed.
+  const MAX_PREDISPATCH_RETRIES = 4;
 
   const reportDispatch = () => {
     if (dispatchReported) return;
@@ -1500,12 +1504,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           lower.includes("socket hang up") ||
           (timedOut && !lower.includes("agent.wait")));
 
-      if (isTransient && !dispatchReported && retryCount < MAX_RETRIES) {
+      if (isTransient && !dispatchReported && retryCount < MAX_PREDISPATCH_RETRIES) {
         retryCount++;
         const backoffMs = retryCount * 2000;
         await ctx.onLog(
           "stdout",
-          `[openclaw-gateway] transient error, retry ${retryCount}/${MAX_RETRIES} after ${backoffMs}ms: ${message}\n`,
+          `[openclaw-gateway] transient error, retry ${retryCount}/${MAX_PREDISPATCH_RETRIES} after ${backoffMs}ms: ${message}\n`,
         );
         await new Promise((r) => setTimeout(r, backoffMs));
         continue;
@@ -1527,6 +1531,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           : pairingRequired
             ? "openclaw_gateway_pairing_required"
             : "openclaw_gateway_request_failed",
+        ...(isTransient && !dispatchReported
+          ? {
+              executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+              errorFamily: "transient_upstream",
+              errorMeta: { preDispatch: true },
+            }
+          : {}),
         resultJson: asRecord(latestResultPayload),
       };
     } finally {

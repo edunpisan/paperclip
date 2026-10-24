@@ -15,6 +15,25 @@ import { issueService } from "./issues.js";
 type Run = typeof heartbeatRuns.$inferSelect;
 export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
 
+/**
+ * EOS-08: positive pre-dispatch evidence. The openclaw-gateway adapter only
+ * attaches `executionRecovery: { kind: "bootstrap", providerWorkStarted:
+ * false }` together with a transient family when the failure happened before
+ * the first `agent` request was sent (`!dispatchReported`). Post-dispatch
+ * failures carry no such evidence and must stay fail-closed.
+ */
+export function isPreDispatchBootstrapRecovery(
+  run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson">,
+): boolean {
+  const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
+  if (recovery?.kind !== "bootstrap" || recovery?.providerWorkStarted !== false) return false;
+  const family = typeof run.resultJson?.errorFamily === "string" ? run.resultJson.errorFamily : null;
+  if (family) return family === "transient_upstream";
+  return run.errorCode === "codex_transient_upstream" ||
+    run.errorCode === "claude_transient_upstream" ||
+    run.errorCode === "codex_harness_crash";
+}
+
 /** Error families describe availability, not whether earlier actions happened. */
 export function legacyExecutionNeedsReconciliation(
   run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson"> & Partial<Pick<Run, "scheduledRetryAttempt" | "scheduledRetryReason" | "contextSnapshot">>,
