@@ -481,7 +481,7 @@ else needs it and everything in it is reproducible:
   ones) or `ORIG_HEAD` hold is on one of its remote-tracking refs, present in the shared
   clone, or found on the remote. The remote is read fresh (branches and tags) with the
   company's Git identity, falling back to anonymous access, and only when some commit is in
-  neither place. Remote branches and release tags that the shared clone never fetched do
+  neither place. `HEAD` itself counts too, so a detached checkout is covered. Remote branches and release tags that the shared clone never fetched do
   not keep a clone.
 
 A clone with more than 5,000 refs, reflog entries or such commits is kept

@@ -516,6 +516,17 @@ describeEmbeddedPostgres("isolated repository source re-home", () => {
     expect((await f.row()).metadata?.isolatedRepositoryRehome).toMatchObject({ cleanedAt: null });
   });
 
+  it("keeps a clone whose detached HEAD holds the only copy of a commit", async () => {
+    const f = await fixture();
+    await makeWork(f.cwd);
+    await crashedRehome(f);
+    const detached = git(f.clone, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "detached only");
+    git(f.clone, "checkout", "-q", "--detach", detached);
+    git(f.clone, "reflog", "expire", "--expire=now", "--all");
+    expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row())).toMatchObject({ cloneRemoved: false, cloneKeptReason: "unique_clone_history", cloneKeptPaths: [detached] });
+    expect(await exists(f.clone)).toBe(true);
+  });
+
   it("keeps a clone whose own checkout has changes or unexplained ignored files", async () => {
     const f = await fixture();
     await makeWork(f.cwd);

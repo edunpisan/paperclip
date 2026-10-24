@@ -567,8 +567,9 @@ async function cloneDisposable(clone: string, base: string | null, missingUpstre
       .split("\n").map(line => line.trim().split(" ")).filter(([sha]) => SHA.test(sha ?? ""));
     if (reflog.length > CLONE_HISTORY_BUDGET) return kept("clone_history_budget");
     const original = (await fs.readFile(path.join(clone, ".git", "ORIG_HEAD"), "utf8").catch(() => "")).trim();
+    const head = (await git(clone, ["rev-parse", "--verify", "-q", "HEAD^{commit}"], { signal }).catch(() => "")).trim();
     const tips = [...new Set([...refs.filter(ref => !/ refs\/remotes\//.test(ref)).map(ref => ref.split(" ")[0]!),
-      ...reflog.filter(([, selector]) => !(selector ?? "").startsWith("refs/remotes/")).map(([sha]) => sha!), ...(SHA.test(original) ? [original] : [])])];
+      ...reflog.filter(([, selector]) => !(selector ?? "").startsWith("refs/remotes/")).map(([sha]) => sha!), ...(SHA.test(original) ? [original] : []), ...(SHA.test(head) ? [head] : [])])];
     const tipsInBase = base ? await presentCommits(base, tips, signal) : new Set<string>();
     const pending = tips.filter(sha => !tipsInBase.has(sha));
     if (pending.length === 0) return { reason: null, paths: [] };
