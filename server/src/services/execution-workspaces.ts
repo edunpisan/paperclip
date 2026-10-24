@@ -6,7 +6,7 @@ import { measureRunPhase } from "./execution-preparation-timing.js";
 import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-access.js";
 import { verifiedRecordedIsolatedRemoteSource, withIsolatedRepositorySourceLock } from "./isolated-remote-workspace-source.js";
 import { expireReconstructableGitWorkspace, gitWorkspaceLastActivityAt, hasPendingGitExpiration } from "./git-workspace-expiration.js";
-import { hasPendingIsolatedRepositoryRehomeCleanup, isIsolatedRepositoryRehomeCandidate, rehomeExpiredIsolatedRestoration, rehomeIsolatedRepositoryWorkspace } from "./isolated-repository-rehome.js";
+import { hasPendingIsolatedRepositoryRehomeCleanup, isIsolatedRepositoryRehomeCandidate, rehomeExpiredIsolatedRestoration, rehomeIsolatedRepositoryWorkspace, sweepOrphanedIsolatedRepositorySources } from "./isolated-repository-rehome.js";
 import { hasPendingNestedCloneMigration, isNestedCloneMigrationCandidate, nextNestedCloneMigrationBatch, pendingNestedCloneMigrationNames, listNestedCloneMigrationNames, migrateNestedRepositoryClone,
   NESTED_CLONE_MIGRATION_RETRY_REASONS, type NestedCloneMigrationRotation } from "./nested-clone-migration.js";
 import type { StorageService } from "../storage/types.js";
@@ -1756,6 +1756,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   const nestedCloneMigrationNotBefore = new Map<string, number>();
   const nestedCloneMigrationRetryAt = new Map<string, number>();
   const nestedCloneMigrationRotations = new Map<string, NestedCloneMigrationRotation>();
+  const ISOLATED_ORPHAN_RETRY_MS = 24 * 60 * 60 * 1000;
+  let isolatedOrphanSweepDueAt = 0;
+  let isolatedOrphanCursor: string | null = null;
+  let isolatedOrphanKept = false;
   let terminalSweepRescanRequested = false;
   // The reaper freezes an upper bound on updatedAt at the start of each
   // rotation. The scan only reads candidates at or below the bound, so a steady
@@ -3283,6 +3287,25 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         isolatedRehomeDeadlines.clear();
         nestedCloneMigrationDeadlines.clear();
         terminalSweepRescanRequested = false;
+        if (opts.gitCacheExpirationEnabled && opts.isolatedSourceRehomeEnabled && isolatedOrphanSweepDueAt <= now().getTime()) {
+          const dryRun = opts.isolatedSourceRehomeDryRun ?? false;
+          const batch = await sweepOrphanedIsolatedRepositorySources(db, { dryRun, signal, after: isolatedOrphanCursor }).catch((error: unknown) => {
+            signal?.throwIfAborted();
+            logger.warn({ err: error }, "isolated repository source orphan sweep failed; it retries later");
+            return null;
+          });
+          for (const orphan of batch?.results ?? []) {
+            logger.info({ event: "execution_workspace.isolated_source_orphan_cleanup", dryRun, ...orphan }, "Orphaned isolated repository source inspected");
+          }
+          isolatedOrphanKept ||= !batch || batch.results.some(orphan => !orphan.removed);
+          isolatedOrphanCursor = batch?.next ?? null;
+          if (isolatedOrphanCursor) isolatedOrphanSweepDueAt = now().getTime();
+          else {
+            isolatedOrphanSweepDueAt = isolatedOrphanKept ? now().getTime() + ISOLATED_ORPHAN_RETRY_MS : Number.POSITIVE_INFINITY;
+            isolatedOrphanKept = false;
+          }
+        }
+        if (Number.isFinite(isolatedOrphanSweepDueAt) && isolatedOrphanSweepDueAt > 0) isolatedRehomeDeadlines.set("isolated-source-orphans", isolatedOrphanSweepDueAt);
       }
       const boundary = terminalSweepBoundary;
       const boundaryFilter = boundary

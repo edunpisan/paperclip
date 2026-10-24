@@ -428,7 +428,9 @@ restore can interleave. A workspace is moved only when:
 - its Git state is transferable: no stash or replacement refs, no in-progress merge,
   rebase or other worktree-specific state, no hidden index flags, no shallow history, and
   nothing a restore point refuses (submodules, filtered paths, special files, untracked
-  nested repositories, oversized contents).
+  nested repositories). The transfer is local, so it uses much larger restore point limits
+  than uploads do: 500,000 files, 1 GiB per file and in total, a 1.5 GiB bundle and
+  1,000,000 commits.
 
 The move captures a restore point of the old worktree against commits both repositories
 share, imports it into the shared clone, creates or fast-forwards the issue branch, adds
@@ -461,16 +463,48 @@ rollback stops with `rehome_rollback_conflict` and keeps the new worktree and th
 neither copy is lost; later attempts retry the rollback once the conflict is resolved. A new worktree is removed only when the move created it: a
 target that appears from elsewhere is never deleted.
 
-After the update, the old worktree is removed and the clone is renamed to trash and
-deleted when nothing else needs it: no other workspace or project workspace refers to it
-(a workspace already expired with its worktree removed does not count), no runtime
-service runs in it, it has no other worktree, its own checkout has no changes or files
-other than regenerable ones, it has only branch, tag and remote-tracking refs, and every
-commit its local refs and reflogs hold is either on a remote-tracking ref or present in the
-shared clone. A clone with more than 5,000 refs, reflog entries or such commits is kept
-(`clone_history_budget`). A clone another workspace still uses is kept (`cloneRetained`); that
-workspace's own move removes it later. If the server stops after the update, a later sweep
-finishes the removal and sets `cleanedAt`, also after the workspace has been archived.
+After the update, the old worktree is removed (its ownership is proven by `git rev-parse`
+or, when its registration in the clone was already pruned, by its `.git` pointer into the
+clone's `worktrees` directory). The clone is then renamed to trash and deleted when nothing
+else needs it and everything in it is reproducible:
+
+- no other workspace or project workspace refers to it (a workspace already expired with its
+  worktree removed does not count) and no runtime service runs in it;
+- after `git worktree prune`, it has no worktree besides its own checkout;
+- its own checkout has no tracked changes and no untracked files (only Paperclip's
+  compaction trash is allowed, even inside a directory with a regenerable name), and its
+  ignored files are only inside regenerable directories (such as `node_modules`) or Paperclip's compaction
+  trash. Empty directories, such as the `.paperclip/worktrees` parent left by the old
+  worktree, do not count;
+- it has only branch, tag and remote-tracking refs (no stash, notes or replacement refs);
+- every commit that its local branches, local tags, reflogs (other than remote-tracking
+  ones) or `ORIG_HEAD` hold is on one of its remote-tracking refs, present in the shared
+  clone, or found on the remote. The remote is read fresh (branches and tags) with the
+  company's Git identity, falling back to anonymous access, and only when some commit is in
+  neither place. Remote branches and release tags that the shared clone never fetched do
+  not keep a clone.
+
+A clone with more than 5,000 refs, reflog entries or such commits is kept
+(`clone_history_budget`), and so is one with more than 1,000 ignored directories outside
+regenerable ones (`clone_file_budget`); those directories are read in one Git call. The log entry names up to five paths, worktrees, refs or commits
+that kept a clone (`cloneKeptPaths`). A clone another workspace still uses is kept
+(`cloneRetained`); that workspace's own move removes it later. If the server stops after
+the update, a later sweep finishes the removal and sets `cleanedAt`, also after the
+workspace has been archived.
+
+The reaper also sweeps orphaned clones under `isolated-repository-sources/` once per server
+start: clones that no execution workspace refers to (no open workspace with matching
+`isolatedRemoteSource`, and no closed one that would need the clone to reopen) and that no
+pending move or cleanup still owns. The repository must be proven by the database: the
+workspaces of that issue must record exactly one repository URL, and the clone's `origin`
+must equal it (`unproven_repository` or `source_identity_changed` otherwise), so a rewritten
+`origin` is never fetched or trusted. It applies the same reproducibility check, using the
+shared clone of a workspace of the same issue and repository when one exists, and logs
+`event: "execution_workspace.isolated_source_orphan_cleanup"`. It inspects at most eight
+issue directories per reaper sweep and continues from that position in the next sweep, so a
+slow remote cannot hold up other workspace cleanup. When the walk ends and it kept any
+orphan, it looks again a day later; otherwise it registers no further work. It also deletes leftover
+trash directories from interrupted removals.
 
 Each attempt logs `event: "execution_workspace.isolated_source_rehome"` with the outcome,
 skip reason, candidate bytes and reclaimed bytes. A workspace that is skipped, or whose
