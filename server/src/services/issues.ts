@@ -9869,7 +9869,7 @@ export function issueService(db: Db) {
               const rows = await tx.select().from(issueComments).where(and(eq(issueComments.issueId, source.id),eq(issueComments.companyId,companyId)));
               const evidence = wizardDelegationEvidence(rows, source.assigneeAgentId!, {title:resolvedTitle, description:issueData.description ?? "", assigneeAgentId:issueData.assigneeAgentId ?? ""});
               if (!isWizardRoom(source) || !evidence || issueData.parentId !== source.id || source.assigneeAgentId !== issueData.createdByAgentId) throw forbidden("Wizard delegation requires clarification and latest Owner approval for this exact scope; no task was created");
-              data.idempotencyKey = `wizard:${source.id}:${evidence.approvalId}:${evidence.taskIndex}`;
+              data.idempotencyKey = `wizard:${source.id}:${evidence.hash}:${evidence.taskIndex}`;
             }
           }
         }

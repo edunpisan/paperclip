@@ -1,4 +1,4 @@
-import { publishWizardModelReply } from "./wizard-conversation.js";
+import { publishWizardModelReply, prepareWizardTurn } from "./wizard-conversation.js";
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
@@ -1120,15 +1120,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         omitIssueDescription: Boolean(taskContextNote),
       });
   const wizardRoom = JSON.stringify(ctx.context.paperclipIssue ?? ctx.context.paperclipWake ?? {}).includes("[wizard-project:");
-  const wizardContract = wizardRoom ? "WIZARD CONVERSATION, NOT AN IMPLEMENTATION TASK. Respond directly to the Owner in natural Indonesian NOW. Your terminal assistant text is automatically appended to this exact project room as the assigned conductor; For first/clarifying turns, do not use tools, inspect source, hunt credentials, call APIs, create tasks, or claim a reply was sent. Only when all requirements are clear, a local hash calculation and read-only org lookup are allowed to prepare the exact proposal, not implementation/delegation. After the latest Owner message explicitly approves the exact current scope, use official API only for those exact tasks and preserve parentId/idempotency; the server guard remains authoritative. On the first Owner turn ALWAYS ask context-appropriate clarification about purpose, requested scope, constraints and intended audience; even a full brief requires confirmation before work. On follow-up answer the user and clarify missing requirements. When scope is complete propose exact tasks as [wizard-scope:SHA256] fenced JSON {purpose,pages,style,references,audience,tasks:[{title,description,assigneeAgentId}]} and request SETUJU SCOPE <hash>; wait. Exact task scope must be approved by the latest Owner message; no old/blanket approval. Server checks this before any task creation. Do not delegate an ambiguous request. Do not change room status. Do not produce a technical run summary; address the Owner." : "";
-  const wakeText = buildWakeText(
+  const wizardTurn = wizardRoom && wakePayload.issueId && wakePayload.wakeCommentId ? await prepareWizardTurn({apiUrl:paperclipEnv.PAPERCLIP_API_URL ?? "http://127.0.0.1:3100",keyPath:resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath),agentId:ctx.agent.id,runId:ctx.runId,issueId:wakePayload.issueId,wakeCommentId:wakePayload.wakeCommentId}) : null;
+  const wizardContract = wizardRoom ? `WIZARD OWNER CONVERSATION. Answer in everyday Indonesian, concise and substantive. This is NOT implementation. Your terminal text is automatically published to this exact room. NO TOOLS, source inspection, API calls, hash calculation, task creation or technical run summary. Read the full supplied brief/history; do not ask answered questions. CRITICAL: If the Owner explicitly says they do not know requirements, or purpose/audience/requested work is absent, ask only 1–3 short contextual questions (maximum 80 words). DO NOT propose tasks, assume pages or invent enrollment/payment/features. If the existing brief already answers purpose, audience and requested work, do not repeat them: propose that exact work, leaving technology choices to the team. Never delegate before human approval. Avoid jargon RFQ/MOQ/stack/scope/board; say formulir penawaran, jumlah minimal, pilihan teknologi, rencana kerja, daftar tugas. For a complete brief, give at most 120 words of readable Indonesian summary and a structured block fenced wizard-proposal containing {purpose,pages,style,references,audience,tasks:[{title,description,assigneeAgentId}]}. All five fields are strings, tasks reference only actual supplied agent IDs. Transport computes and stores hidden exact identity. Never print JSON/hash/UUID outside that block or ask the Owner to copy a code. Ask 'Apakah rencana ini disetujui?' Human can reply 'oke setuju, gas' or reject/change. Never regenerate an unchanged proposal after approval or invent dispatch. ${wizardTurn?.context ?? ''}` : "";
+  const wakeText = wizardRoom ? wizardContract : buildWakeText(
     wakePayload,
     paperclipEnv,
-    structuredWakeJson
+    wizardRoom ? "Use only the bounded Wizard conversation contract below; no implementation workflow." : structuredWakeJson
       ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
       : structuredWakePrompt,
     resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath),
-    [wizardContract, taskContextNote].filter(Boolean).join("\n\n") || undefined,
+    [wizardContract, wizardRoom ? "" : taskContextNote].filter(Boolean).join("\n\n") || undefined,
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
