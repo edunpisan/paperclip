@@ -1,3 +1,4 @@
+import { publishWizardModelReply } from "./wizard-conversation.js";
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
@@ -1118,6 +1119,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     : stringifyPaperclipWakePayload(ctx.context.paperclipWake, {
         omitIssueDescription: Boolean(taskContextNote),
       });
+  const wizardRoom = JSON.stringify(ctx.context.paperclipIssue ?? ctx.context.paperclipWake ?? {}).includes("[wizard-project:");
+  const wizardContract = wizardRoom ? "WIZARD CONVERSATION, NOT AN IMPLEMENTATION TASK. Respond directly to the Owner in natural Indonesian NOW. Your terminal assistant text is automatically appended to this exact project room as the assigned conductor; For first/clarifying turns, do not use tools, inspect source, hunt credentials, call APIs, create tasks, or claim a reply was sent. Only when all requirements are clear, a local hash calculation and read-only org lookup are allowed to prepare the exact proposal, not implementation/delegation. After the latest Owner message explicitly approves the exact current scope, use official API only for those exact tasks and preserve parentId/idempotency; the server guard remains authoritative. On the first Owner turn ALWAYS ask context-appropriate clarification about purpose, requested scope, constraints and intended audience; even a full brief requires confirmation before work. On follow-up answer the user and clarify missing requirements. When scope is complete propose exact tasks as [wizard-scope:SHA256] fenced JSON {purpose,pages,style,references,audience,tasks:[{title,description,assigneeAgentId}]} and request SETUJU SCOPE <hash>; wait. Exact task scope must be approved by the latest Owner message; no old/blanket approval. Server checks this before any task creation. Do not delegate an ambiguous request. Do not change room status. Do not produce a technical run summary; address the Owner." : "";
   const wakeText = buildWakeText(
     wakePayload,
     paperclipEnv,
@@ -1125,7 +1128,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
       : structuredWakePrompt,
     resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath),
-    taskContextNote || undefined,
+    [wizardContract, taskContextNote].filter(Boolean).join("\n\n") || undefined,
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
@@ -1417,6 +1420,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         extractResultText(asRecord(latestResultPayload)) ??
         null;
       const summary = summaryFromEvents || summaryFromPayload || null;
+
+      if (wizardRoom) {
+        if (!summary || !wakePayload.issueId || !wakePayload.wakeCommentId) throw new Error("Wizard model response or wake identity missing; no reply published");
+        await publishWizardModelReply({apiUrl:paperclipEnv.PAPERCLIP_API_URL ?? "http://127.0.0.1:3100",keyPath:resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath),agentId:ctx.agent.id,runId:ctx.runId,issueId:wakePayload.issueId,wakeCommentId:wakePayload.wakeCommentId,modelReply:summary});
+      }
 
       const acceptedResult = asRecord(acceptedPayload?.result);
       const latestPayload = asRecord(latestResultPayload);

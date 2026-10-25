@@ -1,3 +1,5 @@
+import { forbidden } from "../errors.js";
+import { isWizardRoom, wizardDelegationEvidence } from "./wizard-conductor-policy.js";
 import { recordChatHandoff, recordChatCompletion, existingChatCompletionReply, acknowledgeChatCompletionReply } from "./chat-completion-delivery.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
@@ -9849,6 +9851,29 @@ export function issueService(db: Db) {
       }
       const persist = async (tx: DbTransaction) => {
         await assertExecutionTaskParent(tx as unknown as Db, companyId, issueData.parentId);
+        // Check before creation, while the room is locked: no omitted/repointed parent bypass.
+        if (issueData.createdByAgentId) {
+          const [creator] = await tx.select().from(agents).where(and(eq(agents.id,issueData.createdByAgentId),eq(agents.companyId,companyId)));
+          if (creator?.role === "ceo" && !actorRunId) throw forbidden("Conductor task creation requires run provenance");
+          const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, actorRunId ?? "00000000-0000-0000-0000-000000000000"), eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, issueData.createdByAgentId)));
+          if (creator?.role === "ceo" && (!run || run.status !== "running")) throw forbidden("Conductor run provenance is invalid");
+          if (issueData.parentId) {
+            const [parent] = await tx.select().from(issues).where(and(eq(issues.id, issueData.parentId),eq(issues.companyId,companyId)));
+            if (parent && /\[wizard-project:[A-Za-z0-9_-]+\]/.test(`${parent.title}\n${parent.description ?? ""}`) &&
+              (run?.nativeIssueId ?? run?.contextSnapshot?.issueId ?? run?.contextSnapshot?.taskId) !== parent.id) throw forbidden("Wizard delegation requires originating room run provenance");
+          }
+          const sourceId = run?.nativeIssueId ?? run?.contextSnapshot?.issueId ?? run?.contextSnapshot?.taskId ?? issueData.parentId;
+          if (typeof sourceId === "string") {
+            const [source] = await tx.select().from(issues).where(and(eq(issues.id, sourceId),eq(issues.companyId, companyId))).for("update");
+            if (source && /\[wizard-project:[A-Za-z0-9_-]+\]/.test(`${source.title}\n${source.description ?? ""}`)) {
+              const rows = await tx.select().from(issueComments).where(and(eq(issueComments.issueId, source.id),eq(issueComments.companyId,companyId)));
+              const evidence = wizardDelegationEvidence(rows, source.assigneeAgentId!, {title:resolvedTitle, description:issueData.description ?? "", assigneeAgentId:issueData.assigneeAgentId ?? ""});
+              if (!isWizardRoom(source) || !evidence || issueData.parentId !== source.id || source.assigneeAgentId !== issueData.createdByAgentId) throw forbidden("Wizard delegation requires clarification and latest Owner approval for this exact scope; no task was created");
+              data.idempotencyKey = `wizard:${source.id}:${evidence.approvalId}:${evidence.taskIndex}`;
+            }
+          }
+        }
+
         if (issueData.conversationAgentId && issueData.conversationUserId) {
           const identity = `conversation:${companyId}:${issueData.conversationAgentId}:${issueData.conversationUserId}`;
           await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${identity}, 0))`);
@@ -9860,7 +9885,7 @@ export function issueService(db: Db) {
             return withRelations;
           }
         }
-        const idempotencyKey = rawIdempotencyKey?.trim() || null;
+        const idempotencyKey = data.idempotencyKey?.trim() || rawIdempotencyKey?.trim() || null;
         const normalizedTitle = normalizeCreateIssueTitle(resolvedTitle);
         if (deduplicateByTitle) {
           const titleGuardKey = `issue-create:title:${companyId}:${issueData.parentId ?? "root"}:${normalizedTitle}`;
@@ -12260,6 +12285,10 @@ export function issueService(db: Db) {
           .censorUsernameInLogs,
       };
       const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+      if (actor.agentId && options?.clientRequestId) {
+        const [existing] = await dbOrTx.select().from(issueComments).where(and(eq(issueComments.issueId,issueId),eq(issueComments.authorAgentId,actor.agentId),eq(issueComments.clientRequestId,options.clientRequestId)));
+        if (existing) { if(existing.body!==redactedBody) throw conflict("Message request ID was already used for different content"); return existing; }
+      }
       if (actor.userId && options?.clientRequestId) {
         const [existing] = await dbOrTx.select().from(issueComments).where(and(eq(issueComments.issueId, issueId),
           eq(issueComments.authorUserId, actor.userId), eq(issueComments.clientRequestId, options.clientRequestId)));
